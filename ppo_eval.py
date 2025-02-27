@@ -7,8 +7,8 @@ import random
 from collections import deque
 from torch import nn, optim
 from ChargingStations import ChargingStations
-from Requests import Requests
-from EVState import EVs
+from TripRequests import Requests
+from EVFleet import EVs
 from utils import visualize_trajectory, print_ev_rewards_summary, plot_scores
 from env_5min import EVChargingDecisionEnv
 from ppo_greedy import PPOAgent, compute_agent_state_size

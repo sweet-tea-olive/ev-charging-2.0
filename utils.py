@@ -1,8 +1,33 @@
 import numpy as np
+import pandas as pd
 import random
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+
+
+def df_to_list(fname=None):
+    if fname is None:
+        return None
+    else:
+        df = pd.read_csv(fname, header=None, dtype=str)  
+        
+        # Try converting first row to float; if fails, assume it's a header and remove it
+        try:
+            df.iloc[0].astype(float)  # Check if first row is numeric
+            
+        except ValueError:
+            df = df.iloc[1:]  # Drop first row if it's non-numeric
+        
+        df = df.astype(float)  # Convert everything to float
+        
+        data = df.values.tolist()
+        
+        # Flatten if it's a single column
+        if data and len(data[0]) == 1:
+            return [row[0] for row in data]
+        
+        return data
 
 
 

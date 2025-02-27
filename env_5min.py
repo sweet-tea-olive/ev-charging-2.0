@@ -3,8 +3,8 @@ from gym import spaces
 import numpy as np
 import random
 from ChargingStations import ChargingStations
-from Requests import Requests
-from EVState import EVs
+from TripRequests import TripRequests
+from EVFleet import EVs
 from data_loader import DataLoader
 from utils import visualize_trajectory, print_ev_rewards_summary
 
@@ -50,7 +50,7 @@ class EVChargingDecisionEnv(gym.Env):
 		data_loader = DataLoader()
   
 		arrival_rates = data_loader.load_arrival_rates("trip_data_5min_5evs2019-04.csv")
-		self.requests_system = Requests(arrival_rates=arrival_rates)
+		self.requests_system = TripRequests(arrival_rates=arrival_rates)
 		self.requests_system.load_trip_records("ready_trip_data2019-04.csv")
 		self.requests_system.pay_rates = data_loader.load_pay_rates("pay_rates_5min.csv")
   
@@ -429,8 +429,8 @@ class EVChargingDecisionEnv(gym.Env):
 				go_charge_evs.remove(ev)
 
 		station_id = open_stations[0]
-		station_info = self.charging_system.stations_list[station_id]
-		number_of_open = station_info["number_of_open"]
+		station_info = self.charging_system.stations[station_id]
+		number_of_open = station_info["total_available_chargers"]
 
 		random.shuffle(go_charge_evs)
 		evs_to_assign = go_charge_evs[:min(number_of_open, len(go_charge_evs))]
