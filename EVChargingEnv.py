@@ -1,11 +1,11 @@
 import gym
 from gym import spaces
 import numpy as np
+import json
 import random
 from ChargingStations import ChargingStations
 from TripRequests import TripRequests
 from EVFleet import EVFleet
-from data_loader import DataLoader
 import matplotlib.pyplot as plt
 from utils import df_to_list, visualize_trajectory, print_ev_rewards_summary
 
@@ -50,7 +50,7 @@ class EVChargingEnv(gym.Env):
 			
 		self.randomize_trips = True # by default, randomly sample trip requests
 		self.randomize_init_SoCs = True # by default, randomize initial SoCs
-		self.randomize_prices = False # by default, not randomize charging price
+		self.randomize_prices = True # by default, not randomize charging price
 
 		self.states_min = np.array([0,0,0,0,0])
 		self.states_max = np.array([2,100,1,0,0])
@@ -125,7 +125,7 @@ class EVChargingEnv(gym.Env):
 		self.total_violation_penalty += violation_penalty
   
 		if self.randomize_trips:
-			num_requests = self.trip_requests.arrival_rates[self.current_timepoint] * 5
+			num_requests = self.trip_requests.arrival_rates[self.current_timepoint] * 10
 			self.trip_requests.sample_requests(num_requests, self.current_timepoint)
 
 		for s in ['OperationalStatus', 'TimeToNextAvailability', 'SoC']:
@@ -472,21 +472,23 @@ class EVChargingEnv(gym.Env):
 
 
 def main():
-	example_config = {
-		"total_time_steps": 216,
-		"time_step_minutes":5,
-		"total_evs": 5,
-		"committed_charging_block_minutes": 15,
-		"renewed_charging_block_minutes": 5, 
-		"ev_params": None,
-		"trip_params": None,
-		"charging_params": None,
-		"other_env_params": None
-	}
+	# example_config = {
+	# 	"total_time_steps": 216,
+	# 	"time_step_minutes":5,
+	# 	"total_evs": 5,
+	# 	"committed_charging_block_minutes": 15,
+	# 	"renewed_charging_block_minutes": 5, 
+	# 	"ev_params": None,
+	# 	"trip_params": None,
+	# 	"charging_params": None,
+	# 	"other_env_params": None
+	# }
+	with open("basic_config.json", "r") as config_file:
+		example_config = json.load(config_file)
 	
 	env = EVChargingEnv(example_config)  # 3 EVs, total 10 sessions, charging holds 2 sessions
 	
-	total_episodes = 10
+	total_episodes = 1
 	ep_pay = []
 	ep_cost = []
 	ep_returns = []
@@ -500,8 +502,8 @@ def main():
 			# actions = [0 for _ in range(env.N)]
 			_, _, done, info, _ = env.step(actions)
 			
-			# if ep % 5 == 0:
-			# 	env.report_progress()
+			if ep % 5 == 0:
+				env.report_progress()
 	
 			if done:
 				break
@@ -512,6 +514,7 @@ def main():
 		ep_penalty.append(env.total_violation_penalty)
   
 	visualize_trajectory(env.agents_trajectory)
+	
  
 	ep_pay = [round(float(r), 2) for r in ep_pay]
 	print("total pay:", ep_pay)

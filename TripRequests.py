@@ -1,7 +1,9 @@
 import random
 import pandas as pd
 import datetime
-from utils import df_to_list
+import json
+from utils import df_to_list, load_file
+from collections import defaultdict
 
 class TripRequests:
 	def __init__(self, config=None):
@@ -9,30 +11,27 @@ class TripRequests:
 			config = {
 				"arrival_rates_fname": "arrival_rates_5min_5evs_2019-04.csv",
 				"pay_rates_fname": "pay_rates_5min_2019-04.csv",
-				"saved_trips_fname": None,
+				"saved_trips_fname": "saved_trips2019-04.json",
 				"trip_records_fname": "ready_trip_data2019-04.csv"
 			}
 	 
 		self.arrival_rates = df_to_list(config.get("arrival_rates_fname"))
 		self.pay_rates = df_to_list(config.get("pay_rates_fname"))
-		self.saved_data = df_to_list(config.get("saved_trips_fname"))
-		self.trip_records = pd.read_csv(config.get("trip_records_fname"))
+		self.saved_data = load_file(config.get("saved_trips_fname"))
+		self.trip_records = load_file(config.get("trip_records_fname"))
 
 	def reset(self, randomize_trips=True):
 		self.requests = {}
 		self.open_requests = []
 		self.max_id = 0
 
-		if randomize_trips is False:
+		if not randomize_trips:
 			if self.saved_data is not None:
+				self.saved_data = {int(k): v for k, v in self.saved_data.items()}
 				pickup_location = (0, 0)
-				n_rows = len(self.saved_data)
-				n_cols = len(self.saved_data[0])
-				for i in range(n_rows):
-					raised_time = i
-					for j in range(n_cols):
-						trip_duration = self.saved_data[i][j]
-						driver_pay = trip_duration * self.pay_rates[j]
+				for raised_time, trip_durations in self.saved_data.items():  # Iterate through dictionary
+					for trip_duration in trip_durations:  # Iterate through list of durations
+						driver_pay = trip_duration * self.pay_rates[raised_time]  # Use raised_time for indexing
 						self.create_request(raised_time, pickup_location, trip_duration, driver_pay)
 			else:
 				raise Exception("Unable to use saved trip data: No saved data available.")
@@ -111,19 +110,36 @@ def main():
 	
 
 	requests = TripRequests()
-	requests.reset()
-	for current_timepoint in range(216):
-		num_requests = requests.arrival_rates[current_timepoint]
-		requests.sample_requests(num_requests, current_timepoint)
+	requests.reset(randomize_trips=False)
 
+	# for current_timepoint in range(216):
+	# 	num_requests = requests.arrival_rates[current_timepoint]
+	# 	requests.sample_requests(num_requests, current_timepoint)
+  
+	# grouped_durations = defaultdict(list)
+ 
+	# for request in requests.requests.values():
+	# 	raised_time = request.get("raised_time")
+	# 	trip_duration = request.get("trip_duration")
+	# 	grouped_durations[raised_time].append(trip_duration)
+  
+	# print(grouped_durations)
+	# with open("saved_trips2019-04.json", "w") as f:
+	# 	json.dump(grouped_durations, f, indent=4)
+
+	# nested_list = list(grouped_durations.values())
+
+	# print(nested_list)
+
+	# print(requests.requests)
 	print(len(requests.requests))
 	print(sum(requests.arrival_rates))
 
-	print("Time when trips are requested:")
-	for key, value in requests.requests.items():
-		hour = (6*60+value['raised_time']*5) // 60
-		minute = (6*60+value['raised_time']*5) % 60
-		print(f"{hour}:{minute}")
+	# print("Time when trips are requested:")
+	# for key, value in requests.requests.items():
+	# 	hour = (6*60+value['raised_time']*5) // 60
+	# 	minute = (6*60+value['raised_time']*5) % 60
+	# 	print(f"{hour}:{minute}")
 
  
 

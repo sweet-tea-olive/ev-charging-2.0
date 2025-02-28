@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import random
+import json
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -28,6 +29,26 @@ def df_to_list(fname=None):
             return [row[0] for row in data]
         
         return data
+
+def load_file(filename):
+    """
+    Load a file based on its extension.
+    
+    If the file is a CSV, return a pandas DataFrame.
+    If the file is a JSON, return a dictionary.
+
+    """
+    # Get the file extension and convert it to lowercase
+    _, ext = os.path.splitext(filename)
+    ext = ext.lower()
+
+    if ext == '.csv':
+        return pd.read_csv(filename)
+    elif ext == '.json':
+        with open(filename, 'r') as file:
+            return json.load(file)
+    else:
+        raise ValueError(f"Unsupported file format: {ext}")
 
 
 
