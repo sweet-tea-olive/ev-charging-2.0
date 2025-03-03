@@ -31,8 +31,7 @@ class TripRequests:
 				pickup_location = (0, 0)
 				for raised_time, trip_durations in self.saved_data.items():  # Iterate through dictionary
 					for trip_duration in trip_durations:  # Iterate through list of durations
-						driver_pay = trip_duration * self.pay_rates[raised_time]  # Use raised_time for indexing
-						self.create_request(raised_time, pickup_location, trip_duration, driver_pay)
+						self.create_request(raised_time, pickup_location, trip_duration[0], trip_duration[1])
 			else:
 				raise Exception("Unable to use saved trip data: No saved data available.")
 
@@ -56,11 +55,9 @@ class TripRequests:
 			raise Exception("Request does not exist.")
 	
 	def update_open_requests(self, current_timepoint):
-		# Filter open requests that are still within the valid time range (4 units in this case)
-		self.open_requests = [
-			req_id for req_id in self.open_requests
-			if self.requests[req_id]["status"] == "open" and (current_timepoint - self.requests[req_id]["raised_time"] <= 1)
-		]
+		
+		self.open_requests = [key for key, value in self.requests.items() 
+                     if value['raised_time'] == current_timepoint and value['status'] == 'open']
 		return self.open_requests
 
 	def sample_requests(self, num_requests, raised_time, max_trip_duration=10, pay_rate=1.0):
@@ -110,22 +107,23 @@ def main():
 	
 
 	requests = TripRequests()
-	requests.reset(randomize_trips=False)
+	requests.reset(randomize_trips=True)
 
-	# for current_timepoint in range(216):
-	# 	num_requests = requests.arrival_rates[current_timepoint]
-	# 	requests.sample_requests(num_requests, current_timepoint)
+	for current_timepoint in range(216):
+		num_requests = requests.arrival_rates[current_timepoint]
+		requests.sample_requests(num_requests, current_timepoint)
   
-	# grouped_durations = defaultdict(list)
+	grouped_durations = defaultdict(list)
  
-	# for request in requests.requests.values():
-	# 	raised_time = request.get("raised_time")
-	# 	trip_duration = request.get("trip_duration")
-	# 	grouped_durations[raised_time].append(trip_duration)
+	for request in requests.requests.values():
+		raised_time = request.get("raised_time")
+		trip_duration = request.get("trip_duration")
+		driver_pay = request.get("driver_pay")
+		grouped_durations[raised_time].append((trip_duration, driver_pay))
   
-	# print(grouped_durations)
-	# with open("saved_trips2019-04.json", "w") as f:
-	# 	json.dump(grouped_durations, f, indent=4)
+	print(grouped_durations)
+	with open("saved_trips2019-04.json", "w") as f:
+		json.dump(grouped_durations, f, indent=4)
 
 	# nested_list = list(grouped_durations.values())
 

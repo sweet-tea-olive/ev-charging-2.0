@@ -19,14 +19,21 @@ from utils import visualize_trajectory, print_ev_rewards_summary, plot_scores
 # 	action = 1 if whittle_indices[0] > agent.global_cost+0.01 else 0
 # 	return action, whittle_indices[0]
 
-def select_action(agent, state): 
-	state = agent.normalize_state(state)
-	state_tensor = torch.from_numpy(state).float().unsqueeze(0)
-	lambda_g = torch.tensor([[agent.global_cost]], dtype=torch.float)
-	with torch.no_grad():
-		q_values = agent.qnetwork_local(state_tensor, lambda_g)
+def select_action(self, state, evaluate=False):  
+    """ Select actions with or without exploration """
+    if not evaluate and random.random() < self.epsilon:
+        return random.choice(range(self.action_size))
+    
+    self.update_state_bounds(state)
+    state = np.array(self.normalize_state(state))
+    state_tensor = torch.from_numpy(state).float().unsqueeze(0)
+    lambda_g = torch.tensor([[self.global_cost]], dtype=torch.float)
 
-	return np.argmax(q_values.numpy())
+    with torch.no_grad():
+        q_values = self.qnetwork_local(state_tensor, lambda_g)
+
+    return np.argmax(q_values.numpy())
+
 	
 def run_inference(env, agent, n_episodes=10, max_t=300):
 	ep_rewards = []

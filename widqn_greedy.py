@@ -5,12 +5,13 @@ import pandas as pd
 import torch
 import random
 from collections import deque
+import matplotlib.pyplot as plt
 from torch import nn, optim
 from ChargingStations import ChargingStations
-from TripRequests import Requests
-from EVFleet import EVs
-from utils import visualize_trajectory, print_ev_rewards_summary, plot_scores
-from env_5min import EVChargingDecisionEnv
+from TripRequests import TripRequests
+from EVFleet import EVFleet
+from utils import df_to_list, load_file, visualize_trajectory, print_ev_rewards_summary, plot_scores
+from EVChargingEnv import EVChargingEnv
 import json
 import os
 
@@ -22,15 +23,6 @@ class QNetwork(nn.Module):
 		self.fc1 = nn.Linear(state_size + 1, 100)  # state_size + 1 to account for lambda_g
 		self.fc2 = nn.Linear(100, 100)
 		self.fc3 = nn.Linear(100, action_size)
-		# self.init_weights()
-
-	def init_weights(self):
-		nn.init.kaiming_normal_(self.fc1.weight, nonlinearity='relu')
-		nn.init.kaiming_normal_(self.fc2.weight, nonlinearity='relu')
-		nn.init.kaiming_normal_(self.fc3.weight, nonlinearity='relu')
-		nn.init.constant_(self.fc1.bias, 0.01)
-		nn.init.constant_(self.fc2.bias, 0.01)
-		nn.init.constant_(self.fc3.bias, 0.01)
 
 	def forward(self, x, lambda_value):
 		x = torch.cat([x, lambda_value], dim=1)  # Concatenate state and lambda_value
@@ -45,15 +37,6 @@ class WhittleIndexNetwork(nn.Module):
 		self.fc1 = nn.Linear(state_size, 100)
 		self.fc2 = nn.Linear(100, 100)
 		self.fc3 = nn.Linear(100, action_size - 1)  # action_size - 1
-		# self.init_weights()
-
-	def init_weights(self):
-		nn.init.kaiming_normal_(self.fc1.weight, nonlinearity='relu')
-		nn.init.kaiming_normal_(self.fc2.weight, nonlinearity='relu')
-		nn.init.kaiming_normal_(self.fc3.weight, nonlinearity='relu')
-		nn.init.constant_(self.fc1.bias, 0.01)
-		nn.init.constant_(self.fc2.bias, 0.01)
-		nn.init.constant_(self.fc3.bias, 0.01)
 
 	def forward(self, x):
 		x = torch.relu(self.fc1(x))
@@ -97,19 +80,39 @@ class WIQLearningAgent:
 			state = (state - self.state_min) / (self.state_max - self.state_min + 1e-8)  # Add small epsilon to avoid division by zero
 		return state
 		
-	def select_action(self, state): # select actions without constraints
+	# def select_action(self, state): # select actions without constraints
 
-		if random.random() < self.epsilon:
-			return random.choice(range(self.action_size))
+	# 	if random.random() < self.epsilon:
+	# 		return random.choice(range(self.action_size))
+
+	# 	self.update_state_bounds(state)  # Update state bounds with new state
+	# 	state = np.array(self.normalize_state(state))
+	# 	state_tensor = torch.from_numpy(state).float().unsqueeze(0)
+	# 	lambda_g = torch.tensor([[self.global_cost]], dtype=torch.float)
+	# 	with torch.no_grad():
+	# 		q_values = self.qnetwork_local(state_tensor, lambda_g)
+
+	# 	return np.argmax(q_values.numpy())
+ 
+	def select_action(self, state, epsilon=None):  
+		"""Select action using ε-greedy policy for training, and greedy policy for evaluation."""
+	
+		if epsilon is None:
+			epsilon = self.epsilon  # Use self.epsilon during training
+		
+		if random.random() < epsilon:
+			return random.choice(range(self.action_size))  # Random action (exploration)
 
 		self.update_state_bounds(state)  # Update state bounds with new state
 		state = np.array(self.normalize_state(state))
 		state_tensor = torch.from_numpy(state).float().unsqueeze(0)
 		lambda_g = torch.tensor([[self.global_cost]], dtype=torch.float)
+
 		with torch.no_grad():
 			q_values = self.qnetwork_local(state_tensor, lambda_g)
 
-		return np.argmax(q_values.numpy())
+		return np.argmax(q_values.numpy())  # Greedy action (exploitation)
+
 
 	def store_transition(self, state, action, reward, next_state, done):
 		self.memory.append((state, action, reward, next_state, done))
@@ -211,17 +214,17 @@ class WIQLearningAgent:
 		self.lambda_table = {int(k): v for k, v in self.lambda_table.items()}
 			
 # Training function with total reward calculation
-def train(env, agent, n_episodes=200, max_t=3000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995):
+def train(env, agent, n_episodes=2, max_t=3000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995):
 	ep_rewards = []
 	for i_episode in range(1, n_episodes + 1):
 		env.reset()
 
 		episode_rewards = np.zeros(env.N)  # Track rewards for each agent
-		states = [np.hstack(env.EVs.get_state(ev)) for ev in range(env.N)]  # Initial states for all agents
+		states = [np.hstack(env.evs.get_state(ev)) for ev in range(env.N)]  # Initial states for all agents
 		ep_reward = 0
 		for t in range(max_t):
 			
-			resource_level = env.charging_system.get_resource_level()  # Get available resources
+			resource_level = env.charging_stations.get_resource_level()  # Get available resources
 			# print("resource_level:", resource_level)
 			agent.global_cost = agent.lambda_table[resource_level]
 			
@@ -234,22 +237,22 @@ def train(env, agent, n_episodes=200, max_t=3000, epsilon_start=1.0, epsilon_end
 			# print("actions:", actions)
 				
 			# Step using actions for all agents
-			_, rewards, dones, _, _ = env.step(actions)
-			next_states = [np.hstack(env.EVs.get_state(ev)) for ev in range(env.N)]
+			_, rewards, done, _, _ = env.step(actions)
+			next_states = [np.hstack(env.evs.get_state(ev)) for ev in range(env.N)]
 			
 			resource_usage = np.sum(actions)  # Calculate total resource usage
 			agent.update_lambda_table(resource_usage, resource_level)
 			# Update agent for each EV
 			for ev in range(env.N):
 				
-				agent.step(states[ev], actions[ev], rewards[ev], next_states[ev], dones[ev])
+				agent.step(states[ev], actions[ev], rewards[ev], next_states[ev], done)
 				episode_rewards[ev] += rewards[ev]
 				states[ev] = next_states[ev]
 
 			if i_episode % 50 == 0:
 				env.report_progress()
 
-			if all(dones):
+			if done:
 				break
 
 			ep_reward += sum(rewards)
@@ -260,8 +263,56 @@ def train(env, agent, n_episodes=200, max_t=3000, epsilon_start=1.0, epsilon_end
 		
 		# Log total reward for each episode
 		print(f"Episode {i_episode}\tTotal Reward: {ep_reward:.2f}")
+  
+	epsilons = [max(epsilon_end, epsilon_decay**i) for i in range(n_episodes)]
 		
-	return ep_rewards
+	return ep_rewards, epsilons
+
+def evaluate(env, agent, n_episodes=10, max_t=3000):
+    ep_rewards = []
+    
+    for i_episode in range(1, n_episodes + 1):
+        state = env.reset()
+        total_reward = 0
+        
+        for t in range(max_t):
+            action = agent.select_action(state)  # Select action (should be greedy, not exploratory)
+            state, reward, done, _, _ = env.step(action)
+            total_reward += sum(reward)
+
+            if done:
+                break
+
+        ep_rewards.append(total_reward)
+        print(f"Evaluation Episode {i_episode}\tTotal Reward: {total_reward:.2f}")
+
+    # Compute summary statistics
+    avg_reward = np.mean(ep_rewards)
+    std_reward = np.std(ep_rewards)
+
+    print(f"\nEvaluation over {n_episodes} episodes:")
+    print(f"Mean Reward: {avg_reward:.2f}, Std Dev: {std_reward:.2f}")
+
+    return ep_rewards
+
+
+def plot_rewards(ep_rewards, epsilons, window=100):
+	"""Plot total episode rewards over training."""
+	smoothed_rewards = np.convolve(ep_rewards, np.ones(window)/window, mode='valid')  # Moving average
+	plt.figure(figsize=(10,5))
+	plt.plot(ep_rewards, label="Raw Rewards", alpha=0.3)
+	plt.plot(smoothed_rewards, label=f"Moving Average (window={window})", color="red")
+	plt.xlabel("Episode")
+	plt.ylabel("Total Reward")
+	plt.title("Training Convergence")
+	plt.legend()
+	plt.show()
+	
+	plt.plot(epsilons)
+	plt.xlabel("Episode")
+	plt.ylabel("Epsilon")
+	plt.title("Epsilon Decay Over Time")
+	plt.show()
 
 def compute_agent_state_size(state_space, num_agents):
 	"""_example_
@@ -287,40 +338,48 @@ def compute_agent_state_size(state_space, num_agents):
 
 
 def main():
-	dt = 5  # 1-minute time step;  Actions taken every 5 minutes
-	delta1 = 15 # charge session is 3 time steps (15 minutes)
-	delta2 = 5 # charge session is 1 time steps (5 minutes)
-	total_evs = 5
- 
-	# make sure all data in decission-interval resolution exist in the current path
-
-	env = EVChargingDecisionEnv(total_evs, 216, dt, delta1, delta2)  # 3 EVs, total 10 sessions, charging holds 2 sessions
-
+	with open("config_for_train.json", "r") as config_file:
+		example_config = json.load(config_file)
+	env = EVChargingEnv(example_config, training_mode=True)  # 3 EVs, total 10 sessions, charging holds 2 sessions
 	env.reset()
+ 
 	state_size = compute_agent_state_size(env.state_space, env.N)
 	action_size = 2
-	max_resource_level = env.charging_system.get_resource_level() 
+	max_resource_level = env.charging_stations.get_resource_level() 
 	agent = WIQLearningAgent(state_size, action_size, feature_scaling=True, max_resource_level=max_resource_level)
 	
-	scores = train(env, agent)
-	# plot_scores(scores)
+	ep_rewards, epsilons = train(env, agent)
+	plot_rewards(ep_rewards, epsilons)
 	visualize_trajectory(env.agents_trajectory)
 	print_ev_rewards_summary(env.agents_trajectory['Reward'])
 	print("lambda_table:", agent.lambda_table )
-	
-	
-	agent.save("qnetwork_local.pth", "whittle_index_network.pth", "lambda_table.json")
- 
-	
-	# output_dir = "wi_output"
-	# os.makedirs(output_dir, exist_ok=True)
-	
-	# agent.save(os.path.join(output_dir, "qnetwork_local.pth"),
-	# 		   os.path.join(output_dir, "whittle_index_network.pth"),
-	# 		   os.path.join(output_dir, "lambda_table.json"))
 
-	# trajectory_fig_path = os.path.join(output_dir, "trajectory_plot.png")
-	# visualize_trajectory(env.agents_trajectory, save_path=trajectory_fig_path)
+	output_dir = "wi_output"
+	os.makedirs(output_dir, exist_ok=True)
+	agent.save(os.path.join(output_dir, "qnetwork_local.pth"),
+			   os.path.join(output_dir, "whittle_index_network.pth"),
+			   os.path.join(output_dir, "lambda_table.json"))
+ 
+	# for evaluation over 100 configs for testing (here, use 1 config as an example for evaluation)
+	
+	agent = WIQLearningAgent(state_size, action_size, feature_scaling=False)
+	agent.load(os.path.join(output_dir, "qnetwork_local.pth"),
+			   os.path.join(output_dir, "whittle_index_network.pth"),
+			   os.path.join(output_dir, "lambda_table.json"))
+
+	ep_rewards = []
+	total_eval_eps = 1
+	for ep in range(total_eval_eps):
+		with open(f"config_for_eval_{ep}.json", "r") as config_file:
+			example_config = json.load(config_file)
+		env = EVChargingEnv(example_config, training_mode=False)  # 3 EVs, total 10 sessions, charging holds 2 sessions
+		env.reset()
+
+		ep_reward = evaluate(env, agent, n_episodes=1)
+		ep_rewards.append((ep_reward))
+	print("average total rewards:", sum(ep_rewards)/len(ep_rewards))
+	visualize_trajectory(env.agents_trajectory)
+	print_ev_rewards_summary(env.agents_trajectory['Reward'])
 
 
 if __name__ == "__main__":

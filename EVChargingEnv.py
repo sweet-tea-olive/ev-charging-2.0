@@ -11,24 +11,28 @@ from utils import df_to_list, visualize_trajectory, print_ev_rewards_summary
 
 
 class EVChargingEnv(gym.Env):
-	def __init__(self, config):
+	def __init__(self, config, training_mode=True):
 		"""
-		Initializes the EV charging environment using a single config dictionary.
-		
+		Initializes the EV charging environment.
+
 		:param config: Dictionary containing all necessary initialization parameters.
+		:param training_mode: Boolean flag to determine whether the environment is in training mode.
 		"""
 		self.T = config.get("total_time_steps", 1)
 		self.dt = config.get("time_step_minutes", 5)
 		self.N = config.get("total_evs", 5)
 		self.delta1 = config.get("committed_charging_block_minutes", 15)
 		self.delta2 = config.get("renewed_charging_block_minutes", 5)
-	   
+		
 		self.evs = EVFleet(config["ev_params"])
 		self.trip_requests = TripRequests(config["trip_params"])
 		self.charging_stations = ChargingStations(config["charging_params"])
 		
 		self.other_env_params = config.get("env_params", {})
-  
+
+		# Store training mode flag
+		self.training_mode = training_mode
+
 		# Action space: 2 actions (remain-idle, go-charge)
 		self.action_space = spaces.MultiBinary(self.N)
 
@@ -47,33 +51,41 @@ class EVChargingEnv(gym.Env):
 		self._setup_environment()
 	
 	def _setup_environment(self):
-			
-		self.randomize_trips = True # by default, randomly sample trip requests
-		self.randomize_init_SoCs = True # by default, randomize initial SoCs
-		self.randomize_prices = True # by default, not randomize charging price
+		"""Set environment parameters based on training or evaluation mode."""
+		if self.training_mode:
+			self.randomize_trips = True  # Randomly sample trip requests
+			self.randomize_init_SoCs = True  # Randomize initial SoCs
+			self.randomize_prices = True  # Randomize charging prices
+		else:
+			self.randomize_trips = False  # Use saved trip requests
+			self.randomize_init_SoCs = False  # Use saved init SoCs
+			self.randomize_prices = False  # Use saved charging prices
 
-		self.states_min = np.array([0,0,0,0,0])
-		self.states_max = np.array([2,100,1,0,0])
-  
+		# Define state normalization bounds
+		self.states_min = np.array([0, 0, 0, 0, 0])
+		self.states_max = np.array([2, 100, 1, 0, 0])
 
 	def reset(self, seed=None):
+		"""Reset the environment and initialize episode variables."""
 		if seed is not None:
 			random.seed(seed)  
 			np.random.seed(seed) 
-   
+		
 		self.evs.reset(randomize_init_SoCs=self.randomize_init_SoCs)
 		self.trip_requests.reset(randomize_trips=self.randomize_trips)
 		self.charging_stations.reset(randomize_prices=self.randomize_prices)
-  
+		
 		self.current_timepoint = 0
 		self.states = self.evs.get_all_states()
 		
 		self.dispatch_results = {i: {'order': None, 'cs': None} for i in range(self.N)}  # Initialize dispatch results
-		self.agents_trajectory = {'OperationalStatus': np.zeros((self.N, self.T+1)),
-								  'TimeToNextAvailability': np.zeros((self.N, self.T+1)),
-								  'SoC': np.zeros((self.N, self.T+1)),
-								  'Action': np.zeros((self.N, self.T), dtype=int),
-								  'Reward': np.zeros((self.N, self.T))} 
+		self.agents_trajectory = {
+			'OperationalStatus': np.zeros((self.N, self.T+1)),
+			'TimeToNextAvailability': np.zeros((self.N, self.T+1)),
+			'SoC': np.zeros((self.N, self.T+1)),
+			'Action': np.zeros((self.N, self.T), dtype=int),
+			'Reward': np.zeros((self.N, self.T))
+		}
 
 		# Reset metrics
 		self.total_charging_cost = 0.0
@@ -82,7 +94,7 @@ class EVChargingEnv(gym.Env):
 		self.total_successful_dispatches = 0
 		self.total_driver_pay_earned = 0.0
 		self.total_violation_penalty = 0.0
-		self.ep_returns = 0 # accumulate total returns over T times steps for each episode
+		self.ep_returns = 0  # Accumulate total returns over T timesteps
 
 		return np.array(self.states)
 
@@ -96,25 +108,49 @@ class EVChargingEnv(gym.Env):
 		plt.show()
   
 	def check_action_feasibility(self, actions):
-		violation_penalty = 0
+		"""
+		Check the feasibility of actions taken by each EV and compute violation penalties.
+		
+		Penalties are applied as follows:
+		- For each EV:
+			1. If the EV is already serving or charging (tau_t_i >= 1) but takes action 1, add a penalty.
+			2. If the EV's state-of-charge (SoC) is already high (>= 1.0 - 0.5 * reserve_SoC) but takes action 1, add a penalty.
+			3. If the EV's SoC is too low (<= reserve_SoC) but takes action 0 (i.e., not charging), add a penalty.
+		- For the system:
+			4. If the total number of charging actions exceeds available chargers, add a resource-level penalty.
+		
+		Args:
+			actions (list): A list of binary actions for each EV.
+		
+		Returns:
+			dict: A dictionary where each key is the EV index with its penalty, and a "resource" key for system penalty.
+		"""
+		# Initialize penalty dictionary for each EV and one for overall resource constraint
+		violation_penalty = {i: 0.0 for i in range(self.N)}
+		violation_penalty["resource_constraint"] = 0.0
+
 		for i in range(self.N):
+			# Get the current state for EV i: operational status, time-to-next-availability (tau), SoC, and location (ignored)
 			o_t_i, tau_t_i, SoC_i, _ = self.evs.get_state(i)
 
-			# case 1: is serving or charging but take action 1
+			# Case 1: If EV is already serving or charging (tau_t_i >= 1) but takes charging action (action == 1)
 			if tau_t_i >= 1 and actions[i] == 1:
-				violation_penalty += 100
-			# case 2: already very high SoC but take action 1
+				violation_penalty[i] += 100
+			
+			# Case 2: If EV already has a high SoC (>= 1.0 - 0.5 * reserve_SoC) but takes charging action (action == 1)
 			if SoC_i >= 1.0 - self.evs.reserve_SoC * 0.5 and actions[i] == 1:
-				violation_penalty += 100
-			# case 3: already very low SoC but take action 0
+				violation_penalty[i] += 100
+			
+			# Case 3: If EV has too low SoC (<= reserve_SoC) but does not take charging action (action == 0)
 			if SoC_i <= self.evs.reserve_SoC and actions[i] == 0:
-				violation_penalty += 100
+				violation_penalty[i] += 100
 
-		# case 4: exceed available chargers
+		# Case 4: System-level penalty if total requested charging actions exceed available chargers
 		if sum(actions) > self.charging_stations.get_resource_level():
-			violation_penalty += 100
+			violation_penalty["resource_constraint"] += 1000
 
 		return violation_penalty
+
   
 		# or raise exception
 		# if violation_penalty > 0:
@@ -122,7 +158,7 @@ class EVChargingEnv(gym.Env):
 
 	def step(self, actions):
 		violation_penalty = self.check_action_feasibility(actions)
-		self.total_violation_penalty += violation_penalty
+		self.total_violation_penalty += sum(violation_penalty.values())
   
 		if self.randomize_trips:
 			num_requests = self.trip_requests.arrival_rates[self.current_timepoint] * 10
@@ -240,7 +276,8 @@ class EVChargingEnv(gym.Env):
 		self.current_timepoint += 1
 
 		done = False
-		if self.current_timepoint >= self.T or all(self.states['SoC'][i] == 0.0 for i in range(self.N)):
+		# if self.current_timepoint >= self.T or all(self.states['SoC'][i] == 0.0 for i in range(self.N)):
+		if self.current_timepoint >= self.T:
 			done = True
    			# Store final state
 			for s in ['OperationalStatus', 'TimeToNextAvailability', 'SoC']:
@@ -253,7 +290,7 @@ class EVChargingEnv(gym.Env):
 		if all(self.states['SoC'][i] == 0.0 for i in range(self.N)):
 			info = "All Battery Depleted."
 
-		return np.array(self.states), rewards, done, info, {"violation_penalty":violation_penalty}
+		return np.array(self.states), rewards, done, info, violation_penalty
 
 	def state_transition(self, ev_i, s_t_i, action_i):
 		o_t_i, tau_t_i, theta_t_i, _ = s_t_i
@@ -483,12 +520,12 @@ def main():
 	# 	"charging_params": None,
 	# 	"other_env_params": None
 	# }
-	with open("basic_config.json", "r") as config_file:
+	with open("config_for_eval_1.json", "r") as config_file:
 		example_config = json.load(config_file)
 	
-	env = EVChargingEnv(example_config)  # 3 EVs, total 10 sessions, charging holds 2 sessions
+	env = EVChargingEnv(example_config, training_mode=False)  # 3 EVs, total 10 sessions, charging holds 2 sessions
 	
-	total_episodes = 1
+	total_episodes = 10
 	ep_pay = []
 	ep_cost = []
 	ep_returns = []
@@ -502,8 +539,8 @@ def main():
 			# actions = [0 for _ in range(env.N)]
 			_, _, done, info, _ = env.step(actions)
 			
-			if ep % 5 == 0:
-				env.report_progress()
+			# if ep % 5 == 0:
+			# 	env.report_progress()
 	
 			if done:
 				break

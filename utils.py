@@ -9,7 +9,7 @@ import matplotlib.patches as mpatches
 
 def df_to_list(fname=None):
     if fname is None:
-        return None
+        return []
     else:
         df = pd.read_csv(fname, header=None, dtype=str)  
         
@@ -38,6 +38,8 @@ def load_file(filename):
     If the file is a JSON, return a dictionary.
 
     """
+    if filename is None:
+        return {}
     # Get the file extension and convert it to lowercase
     _, ext = os.path.splitext(filename)
     ext = ext.lower()
